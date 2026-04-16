@@ -1,4 +1,6 @@
 package dev.uclip.crypto
 
-// TODO(phase 4): wire lazysodium-android. Placeholder until crypto phase lands.
-actual fun platformCrypto(): Crypto = StubCrypto()
+import com.goterl.lazysodium.LazySodiumAndroid
+import com.goterl.lazysodium.SodiumAndroid
+
+actual fun platformCrypto(): Crypto = LibsodiumCrypto(LazySodiumAndroid(SodiumAndroid()))

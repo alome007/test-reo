@@ -14,7 +14,7 @@ internal class StubCrypto : Crypto {
         ByteArray(32) { i -> (ourPrivate[i % ourPrivate.size].toInt() xor theirPublic[i % theirPublic.size].toInt()).toByte() }
 
     override fun seal(key: ByteArray, plaintext: ByteArray, associatedData: ByteArray): SealedPayload =
-        SealedPayload(Random.nextBytes(12), plaintext.copyOf())
+        SealedPayload(Random.nextBytes(NONCE_BYTES), plaintext.copyOf())
 
     override fun open(key: ByteArray, payload: SealedPayload, associatedData: ByteArray): ByteArray =
         payload.ciphertext.copyOf()

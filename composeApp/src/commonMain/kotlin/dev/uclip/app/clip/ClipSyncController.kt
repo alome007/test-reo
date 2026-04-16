@@ -1,6 +1,7 @@
 package dev.uclip.app.clip
 
 import dev.uclip.crypto.Crypto
+import dev.uclip.crypto.NONCE_BYTES
 import dev.uclip.crypto.SealedPayload
 import dev.uclip.protocol.ClipChunk
 import dev.uclip.protocol.ControlFrame
@@ -207,6 +208,6 @@ private fun String.truncate(max: Int = 32): String =
 private fun SealedPayload.encode(): ByteArray = nonce + ciphertext
 
 private fun SealedPayload.Companion.decode(raw: ByteArray): SealedPayload {
-    require(raw.size >= 12) { "sealed payload too short" }
-    return SealedPayload(raw.copyOfRange(0, 12), raw.copyOfRange(12, raw.size))
+    require(raw.size >= NONCE_BYTES) { "sealed payload too short" }
+    return SealedPayload(raw.copyOfRange(0, NONCE_BYTES), raw.copyOfRange(NONCE_BYTES, raw.size))
 }

@@ -1,5 +1,8 @@
 package dev.uclip.crypto
 
+/** Nonce length for the XChaCha20-Poly1305-IETF construction we use. */
+const val NONCE_BYTES = 24
+
 data class KeyPair(val publicKey: ByteArray, val privateKey: ByteArray)
 
 data class SealedPayload(val nonce: ByteArray, val ciphertext: ByteArray) {

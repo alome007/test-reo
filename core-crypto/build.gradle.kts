@@ -21,14 +21,27 @@ kotlin {
         commonMain.dependencies {
             implementation(libs.kotlinx.coroutines.core)
         }
+        val jvmCommonMain by creating {
+            dependsOn(commonMain.get())
+        }
+        val jvmCommonTest by creating {
+            dependsOn(commonTest.get())
+        }
         val desktopMain by getting {
+            dependsOn(jvmCommonMain)
             dependencies {
                 implementation(libs.lazysodium.java)
                 implementation(libs.jna)
             }
         }
-        androidMain.dependencies {
-            implementation(libs.lazysodium.android)
+        val desktopTest by getting {
+            dependsOn(jvmCommonTest)
+        }
+        androidMain {
+            dependsOn(jvmCommonMain)
+            dependencies {
+                implementation(libs.lazysodium.android)
+            }
         }
         commonTest.dependencies {
             implementation(kotlin("test"))

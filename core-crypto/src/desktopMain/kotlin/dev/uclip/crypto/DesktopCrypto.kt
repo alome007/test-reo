@@ -1,5 +1,6 @@
 package dev.uclip.crypto
 
-// TODO(phase 4): wire lazysodium-java. Placeholder implementation to keep the
-// module compiling until the crypto phase lands.
-actual fun platformCrypto(): Crypto = StubCrypto()
+import com.goterl.lazysodium.LazySodiumJava
+import com.goterl.lazysodium.SodiumJava
+
+actual fun platformCrypto(): Crypto = LibsodiumCrypto(LazySodiumJava(SodiumJava()))
