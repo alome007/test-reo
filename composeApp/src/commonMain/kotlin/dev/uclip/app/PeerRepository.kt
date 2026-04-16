@@ -1,5 +1,6 @@
 package dev.uclip.app
 
+import dev.uclip.pairing.DeviceIdentity
 import dev.uclip.transport.Discovery
 import dev.uclip.transport.PeerAddress
 import kotlinx.coroutines.CoroutineScope

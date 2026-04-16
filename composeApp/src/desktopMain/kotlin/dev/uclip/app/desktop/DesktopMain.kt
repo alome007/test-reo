@@ -13,12 +13,14 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberTrayState
 import androidx.compose.ui.window.rememberWindowState
 import dev.uclip.app.App
-import dev.uclip.app.DeviceIdentity
 import dev.uclip.app.PeerRepository
 import dev.uclip.app.clip.ClipSyncController
 import dev.uclip.app.clip.ConnectionManager
 import dev.uclip.app.di.commonModule
 import dev.uclip.app.di.desktopModule
+import dev.uclip.app.pairing.DesktopServerPort
+import dev.uclip.crypto.platformCrypto
+import dev.uclip.pairing.DeviceIdentity
 import dev.uclip.transport.WebSocketServer
 import java.awt.image.BufferedImage
 import java.net.ServerSocket
@@ -29,14 +31,20 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.koin.compose.KoinContext
 import org.koin.core.context.startKoin
+import org.koin.dsl.module
 
 fun main() {
     val port = reserveFreePort()
     val server = WebSocketServer(port = port).also { it.start() }
-    val identity = DeviceIdentity.random("Mac")
+    val crypto = platformCrypto()
+    val identity = DeviceIdentity.random("Mac", crypto)
 
     val koin = startKoin {
-        modules(commonModule, desktopModule(identity))
+        modules(
+            commonModule,
+            desktopModule(identity),
+            module { single { DesktopServerPort(port) } },
+        )
     }.koin
 
     val peerRepo = koin.get<PeerRepository>()

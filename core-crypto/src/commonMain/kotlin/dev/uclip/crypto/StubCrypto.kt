@@ -6,7 +6,7 @@ import kotlin.random.Random
  * NOT SECURE. Compile-time placeholder so dependent modules build while the
  * real libsodium-backed implementation is plumbed in phase 4.
  */
-internal class StubCrypto : Crypto {
+class StubCrypto : Crypto {
     override fun generateKeyPair(): KeyPair =
         KeyPair(Random.nextBytes(32), Random.nextBytes(32))
 

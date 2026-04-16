@@ -24,32 +24,34 @@ import kotlin.random.Random
 
 /**
  * Orchestrates clipboard sync across all currently-attached [Transport]s.
- *
- * Responsibilities:
- *   - When the local clipboard changes, broadcast the content to every peer.
- *   - When a peer sends a clip (ClipMeta + ClipChunk frames), reassemble and
- *     write to the local clipboard.
- *   - Dedupe echoes: if we just wrote content with hash H to the local
- *     clipboard, the ensuing OS change event whose content hashes to H is
- *     ignored so we don't bounce it back.
+ * Each peer carries its own AEAD key (derived via X25519 during pairing), so
+ * payloads are sealed individually per-peer.
  */
 class ClipSyncController(
     private val bridge: ClipboardBridge,
     private val crypto: Crypto,
-    // Placeholder key for phase 5; real per-pair keys land with pairing.
-    private val sharedKey: ByteArray = ByteArray(32),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val mutex = Mutex()
-    private val peers = mutableMapOf<String, Transport>()
-    private val peerJobs = mutableMapOf<String, Job>()
-    private val inFlight = mutableMapOf<String, IncomingClip>()
+    private val peers = mutableMapOf<String, PeerContext>()
     private val recentLocalWrites = ArrayDeque<String>()
 
     private val _status = MutableStateFlow(Status(connectedCount = 0, lastEvent = null))
     val status: StateFlow<Status> = _status.asStateFlow()
 
     data class Status(val connectedCount: Int, val lastEvent: String?)
+
+    private class PeerContext(
+        val transport: Transport,
+        val sharedKey: ByteArray,
+        val consumeJob: Job,
+        val inFlight: MutableMap<String, IncomingClip> = mutableMapOf(),
+    )
+
+    private class IncomingClip(
+        val meta: ControlFrame.ClipMeta,
+        val chunks: Array<ByteArray?>,
+    )
 
     fun start() {
         bridge.start()
@@ -58,23 +60,25 @@ class ClipSyncController(
         }
     }
 
-    suspend fun attach(peerId: String, transport: Transport) {
+    suspend fun attach(peerId: String, transport: Transport, sharedKey: ByteArray) {
         mutex.withLock {
-            peers[peerId]?.let { existing ->
-                runCatching { existing.close() }
-                peerJobs.remove(peerId)?.cancel()
-            }
-            peers[peerId] = transport
-            peerJobs[peerId] = scope.launch { consume(peerId, transport) }
-            _status.value = _status.value.copy(connectedCount = peers.size, lastEvent = "Connected $peerId")
+            peers.remove(peerId)?.let { it.consumeJob.cancel() }
+            val job = scope.launch { consume(peerId, transport) }
+            peers[peerId] = PeerContext(transport, sharedKey, job)
+            _status.value = _status.value.copy(
+                connectedCount = peers.size,
+                lastEvent = "Connected $peerId",
+            )
         }
     }
 
     suspend fun detach(peerId: String) {
         mutex.withLock {
-            peers.remove(peerId)?.let { runCatching { it.close() } }
-            peerJobs.remove(peerId)?.cancel()
-            _status.value = _status.value.copy(connectedCount = peers.size, lastEvent = "Disconnected $peerId")
+            peers.remove(peerId)?.let { it.consumeJob.cancel() }
+            _status.value = _status.value.copy(
+                connectedCount = peers.size,
+                lastEvent = "Disconnected $peerId",
+            )
         }
     }
 
@@ -82,24 +86,23 @@ class ClipSyncController(
         bridge.stop()
         scope.cancel()
         peers.clear()
-        peerJobs.clear()
     }
 
     private suspend fun onLocalChange(content: ClipboardContent) {
         val text = (content as? ClipboardContent.Text)?.text ?: return
         val hash = crypto.sha256(text.encodeToByteArray()).toHex()
         if (markIfEcho(hash)) return
-        val current = mutex.withLock { peers.values.toList() }
-        if (current.isEmpty()) return
-        current.forEach { transport -> runCatching { sendText(transport, text) } }
+        val snapshot = mutex.withLock { peers.toMap() }
+        if (snapshot.isEmpty()) return
+        snapshot.forEach { (_, ctx) -> runCatching { sendText(ctx, text) } }
         _status.value = _status.value.copy(lastEvent = "Sent ${text.truncate()}")
     }
 
-    private suspend fun sendText(transport: Transport, text: String) {
+    private suspend fun sendText(ctx: PeerContext, text: String) {
         val bytes = text.encodeToByteArray()
         val clipId = randomClipId()
-        val chunks = bytes.toList().chunked(DEFAULT_CHUNK_SIZE).map { it.toByteArray() }
-        transport.send(
+        val chunks = bytes.chunkedBy(DEFAULT_CHUNK_SIZE)
+        ctx.transport.send(
             ControlFrame.ClipMeta(
                 clipId = clipId,
                 mime = MimeTypes.TEXT_PLAIN,
@@ -108,14 +111,10 @@ class ClipSyncController(
                 chunks = chunks.size.coerceAtLeast(1),
             )
         )
-        if (chunks.isEmpty()) {
-            val sealed = crypto.seal(sharedKey, ByteArray(0))
-            transport.send(ClipChunk(clipId, 0, sealed.encode()))
-        } else {
-            chunks.forEachIndexed { i, chunk ->
-                val sealed = crypto.seal(sharedKey, chunk)
-                transport.send(ClipChunk(clipId, i, sealed.encode()))
-            }
+        val effective = if (chunks.isEmpty()) listOf(ByteArray(0)) else chunks
+        effective.forEachIndexed { i, chunk ->
+            val sealed = crypto.seal(ctx.sharedKey, chunk)
+            ctx.transport.send(ClipChunk(clipId, i, sealed.encode()))
         }
     }
 
@@ -123,7 +122,7 @@ class ClipSyncController(
         transport.inbound.collect { frame ->
             when (frame) {
                 is InboundFrame.Control -> handleControl(peerId, transport, frame.frame)
-                is InboundFrame.Data -> handleChunk(frame.chunk)
+                is InboundFrame.Data -> handleChunk(peerId, frame.chunk)
             }
         }
     }
@@ -131,7 +130,8 @@ class ClipSyncController(
     private suspend fun handleControl(peerId: String, transport: Transport, frame: ControlFrame) {
         when (frame) {
             is ControlFrame.ClipMeta -> {
-                inFlight[frame.clipId] = IncomingClip(
+                val ctx = peers[peerId] ?: return
+                ctx.inFlight[frame.clipId] = IncomingClip(
                     meta = frame,
                     chunks = arrayOfNulls(frame.chunks.coerceAtLeast(1)),
                 )
@@ -140,17 +140,18 @@ class ClipSyncController(
                 _status.value = _status.value.copy(lastEvent = "Hello from ${frame.displayName}")
             }
             is ControlFrame.Ping -> transport.send(ControlFrame.Pong)
-            else -> { /* phases 4/7+ handle pairing, ack, reject */ }
+            else -> { /* pairing frames handled in ConnectionManager; others TBD */ }
         }
     }
 
-    private fun handleChunk(chunk: ClipChunk) {
-        val inc = inFlight[chunk.clipId] ?: return
+    private fun handleChunk(peerId: String, chunk: ClipChunk) {
+        val ctx = peers[peerId] ?: return
+        val inc = ctx.inFlight[chunk.clipId] ?: return
         if (chunk.seq !in inc.chunks.indices) return
-        val sealed = SealedPayload.decode(chunk.ciphertext)
-        inc.chunks[chunk.seq] = crypto.open(sharedKey, sealed)
+        val sealed = decodeSealed(chunk.ciphertext)
+        inc.chunks[chunk.seq] = crypto.open(ctx.sharedKey, sealed)
         if (inc.chunks.all { it != null }) {
-            inFlight.remove(chunk.clipId)
+            ctx.inFlight.remove(chunk.clipId)
             val totalSize = inc.chunks.sumOf { it!!.size }
             val fullBytes = ByteArray(totalSize)
             var p = 0
@@ -167,7 +168,7 @@ class ClipSyncController(
                     bridge.write(ClipboardContent.Text(text))
                     _status.value = _status.value.copy(lastEvent = "Received ${text.truncate()}")
                 }
-                else -> { /* phase 6+ */ }
+                else -> { /* future content types */ }
             }
         }
     }
@@ -183,17 +184,22 @@ class ClipSyncController(
         recentLocalWrites.addLast(hash)
         while (recentLocalWrites.size > 8) recentLocalWrites.removeFirst()
     }
-
-    private class IncomingClip(
-        val meta: ControlFrame.ClipMeta,
-        val chunks: Array<ByteArray?>,
-    )
 }
 
 private fun randomClipId(): String {
     val bytes = ByteArray(8)
     Random.nextBytes(bytes)
     return bytes.toHex()
+}
+
+private fun ByteArray.chunkedBy(chunkSize: Int): List<ByteArray> {
+    if (isEmpty()) return emptyList()
+    val count = (size + chunkSize - 1) / chunkSize
+    return List(count) { i ->
+        val from = i * chunkSize
+        val to = minOf(from + chunkSize, size)
+        copyOfRange(from, to)
+    }
 }
 
 private fun ByteArray.toHex(): String = buildString(size * 2) {
@@ -207,7 +213,7 @@ private fun String.truncate(max: Int = 32): String =
 
 private fun SealedPayload.encode(): ByteArray = nonce + ciphertext
 
-private fun SealedPayload.Companion.decode(raw: ByteArray): SealedPayload {
+private fun decodeSealed(raw: ByteArray): SealedPayload {
     require(raw.size >= NONCE_BYTES) { "sealed payload too short" }
     return SealedPayload(raw.copyOfRange(0, NONCE_BYTES), raw.copyOfRange(NONCE_BYTES, raw.size))
 }

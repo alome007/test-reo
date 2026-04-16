@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -22,6 +23,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.uclip.app.PeerRepository
 import dev.uclip.app.clip.ClipSyncController
 import dev.uclip.app.clip.ConnectionManager
+import dev.uclip.app.pairing.PairingLauncher
+import dev.uclip.pairing.PairingRegistry
 import dev.uclip.transport.PeerAddress
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
@@ -31,17 +34,26 @@ fun DevicesScreen() {
     val peerRepo = koinInject<PeerRepository>()
     val connections = koinInject<ConnectionManager>()
     val clipSync = koinInject<ClipSyncController>()
+    val pairingLauncher = koinInject<PairingLauncher>()
+    val registry = koinInject<PairingRegistry>()
 
     val peers by peerRepo.peers.collectAsStateWithLifecycle()
     val connected by connections.connected.collectAsStateWithLifecycle()
+    val lastError by connections.lastError.collectAsStateWithLifecycle()
     val status by clipSync.status.collectAsStateWithLifecycle()
+    val pairings by registry.pairings.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("Devices on this network", fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(4.dp))
         Text("Connected: ${status.connectedCount}  ·  Last: ${status.lastEvent ?: "—"}")
+        if (lastError != null) {
+            Spacer(Modifier.height(4.dp))
+            Text("Error: $lastError")
+        }
         Spacer(Modifier.height(12.dp))
+
         if (peers.isEmpty()) {
             Text("Searching… make sure the other device is running Universal Clipboard on the same Wi-Fi.")
         } else {
@@ -50,12 +62,16 @@ fun DevicesScreen() {
                     PeerCard(
                         peer = peer,
                         isConnected = peer.deviceId in connected,
+                        isPaired = pairings.containsKey(peer.deviceId),
                         onConnect = { scope.launch { connections.connectTo(peer) } },
                         onDisconnect = { scope.launch { connections.disconnect(peer.deviceId) } },
                     )
                 }
             }
         }
+
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = { pairingLauncher.request() }) { Text("Pair new device") }
     }
 }
 
@@ -63,6 +79,7 @@ fun DevicesScreen() {
 private fun PeerCard(
     peer: PeerAddress,
     isConnected: Boolean,
+    isPaired: Boolean,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
@@ -70,14 +87,22 @@ private fun PeerCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
-            .clickable { if (isConnected) onDisconnect() else onConnect() }
+            .clickable(enabled = isPaired) {
+                if (isConnected) onDisconnect() else onConnect()
+            }
     ) {
         Column(Modifier.padding(12.dp)) {
-            Row { Text(peer.displayName, fontWeight = FontWeight.SemiBold); Spacer(Modifier.height(0.dp)) }
+            Row { Text(peer.displayName, fontWeight = FontWeight.SemiBold) }
             Text("${peer.host}:${peer.port}  ·  ${peer.source}")
             Text(peer.deviceId)
             Spacer(Modifier.height(4.dp))
-            Text(if (isConnected) "Connected — tap to disconnect" else "Tap to connect")
+            Text(
+                when {
+                    !isPaired -> "Not paired — scan QR to pair"
+                    isConnected -> "Connected — tap to disconnect"
+                    else -> "Paired — tap to connect"
+                }
+            )
         }
     }
 }

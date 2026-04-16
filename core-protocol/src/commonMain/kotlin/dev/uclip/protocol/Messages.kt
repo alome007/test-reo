@@ -15,18 +15,29 @@ sealed interface ControlFrame {
         val protoVersion: Int = PROTOCOL_VERSION,
     ) : ControlFrame
 
-    @Serializable
-    data class PairOffer(
-        val qrToken: String,
-        val nonce: String,
-    ) : ControlFrame
-
+    /**
+     * Sent by the initiator (phone) after scanning the QR. [token] comes from
+     * the QR payload and proves the sender actually scanned it. [pubKey] is
+     * the initiator's X25519 public key, base64-encoded.
+     */
     @Serializable
     data class PairConfirm(
-        val nonce: String,
+        val token: String,
+        val deviceId: String,
+        val displayName: String,
         val pubKey: String,
-        val signature: String,
     ) : ControlFrame
+
+    /** Returned by the responder on successful pairing. */
+    @Serializable
+    data class PairAck(
+        val deviceId: String,
+        val displayName: String,
+    ) : ControlFrame
+
+    /** Returned by the responder if pairing failed (bad token, no active offer, etc). */
+    @Serializable
+    data class PairReject(val reason: String) : ControlFrame
 
     @Serializable
     data class ClipMeta(
