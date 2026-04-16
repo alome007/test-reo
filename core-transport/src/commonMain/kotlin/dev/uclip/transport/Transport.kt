@@ -31,3 +31,8 @@ interface Discovery {
     fun stopAdvertising()
     val peers: Flow<List<PeerAddress>>
 }
+
+internal val ProtocolJson = kotlinx.serialization.json.Json {
+    ignoreUnknownKeys = true
+    classDiscriminator = "type"
+}
