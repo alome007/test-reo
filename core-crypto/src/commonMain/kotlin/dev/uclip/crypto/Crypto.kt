@@ -2,7 +2,9 @@ package dev.uclip.crypto
 
 data class KeyPair(val publicKey: ByteArray, val privateKey: ByteArray)
 
-data class SealedPayload(val nonce: ByteArray, val ciphertext: ByteArray)
+data class SealedPayload(val nonce: ByteArray, val ciphertext: ByteArray) {
+    companion object
+}
 
 interface Crypto {
     fun generateKeyPair(): KeyPair

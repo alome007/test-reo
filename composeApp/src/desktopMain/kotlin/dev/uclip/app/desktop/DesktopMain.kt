@@ -15,11 +15,18 @@ import androidx.compose.ui.window.rememberWindowState
 import dev.uclip.app.App
 import dev.uclip.app.DeviceIdentity
 import dev.uclip.app.PeerRepository
+import dev.uclip.app.clip.ClipSyncController
+import dev.uclip.app.clip.ConnectionManager
 import dev.uclip.app.di.commonModule
 import dev.uclip.app.di.desktopModule
 import dev.uclip.transport.WebSocketServer
 import java.awt.image.BufferedImage
 import java.net.ServerSocket
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import org.koin.compose.KoinContext
 import org.koin.core.context.startKoin
 
@@ -29,9 +36,20 @@ fun main() {
     val identity = DeviceIdentity.random("Mac")
 
     val koin = startKoin {
-        modules(commonModule, desktopModule)
+        modules(commonModule, desktopModule(identity))
     }.koin
-    koin.get<PeerRepository>().bootstrap(identity, localPort = port)
+
+    val peerRepo = koin.get<PeerRepository>()
+    val clipSync = koin.get<ClipSyncController>()
+    val connections = koin.get<ConnectionManager>()
+
+    peerRepo.bootstrap(identity, localPort = port)
+    clipSync.start()
+
+    val acceptScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    acceptScope.launch {
+        server.accepted.collect { transport -> connections.acceptIncoming(transport) }
+    }
 
     try {
         application {
@@ -59,7 +77,9 @@ fun main() {
             }
         }
     } finally {
-        koin.get<PeerRepository>().shutdown()
+        acceptScope.cancel()
+        clipSync.stop()
+        peerRepo.shutdown()
         server.stop()
     }
 }
