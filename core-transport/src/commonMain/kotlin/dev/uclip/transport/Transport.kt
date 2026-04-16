@@ -17,19 +17,35 @@ interface Transport {
 }
 
 data class PeerAddress(
-    val host: String,
-    val port: Int,
     val deviceId: String,
     val displayName: String,
+    val host: String,
+    val port: Int,
     val source: Source,
 ) {
     enum class Source { LAN, RELAY }
 }
 
+/**
+ * mDNS-backed peer discovery. Implementations filter out the local
+ * [selfDeviceId] so we never list ourselves as a peer.
+ */
 interface Discovery {
+    val peers: Flow<List<PeerAddress>>
+
+    fun start(selfDeviceId: String)
     fun advertise(deviceId: String, displayName: String, port: Int)
     fun stopAdvertising()
-    val peers: Flow<List<PeerAddress>>
+    fun close()
+}
+
+const val MDNS_SERVICE_TYPE = "_uclip._tcp."
+const val MDNS_SERVICE_TYPE_LOCAL = "_uclip._tcp.local."
+
+object TxtKeys {
+    const val DEVICE_ID = "deviceId"
+    const val DISPLAY_NAME = "displayName"
+    const val PROTO = "proto"
 }
 
 internal val ProtocolJson = kotlinx.serialization.json.Json {
